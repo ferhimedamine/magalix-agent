@@ -17,6 +17,13 @@ import (
 
 const limit = 1000
 
+type Entities struct {
+	Node        *uuid.UUID
+	Application *uuid.UUID
+	Service     *uuid.UUID
+	Container   *uuid.UUID
+}
+
 type RawMetric struct {
 	Metric string
 
@@ -32,6 +39,28 @@ type RawMetric struct {
 	Value float64
 
 	Timestamp time.Time
+}
+
+type MetricFamily struct {
+	Name string
+	Help string
+	Type string
+	Tags []string
+
+	Values []*MetricValue
+}
+
+type MetricValue struct {
+	*Entities
+
+	Tags  map[string]string
+	Value float64
+}
+
+type MetricsBatch struct {
+	Timestamp time.Time
+
+	Metrics []*MetricFamily
 }
 
 // map of metric_name:list of metric points
@@ -88,23 +117,27 @@ func watchMetrics(
 	ticker.Start(false, true)
 }
 
-func watchRawMetrics(
+func watchMetrics2(
 	client *client.Client,
-	source RawSource,
+	source Source,
 	interval time.Duration,
 ) {
-	metricsPipe := make(chan RawMetrics)
-	go sendRawMetrics(client, metricsPipe)
+	metricsPipe := make(chan *MetricsBatch)
+	go sendMetrics2(client, metricsPipe)
 	defer close(metricsPipe)
 
 	ticker := utils.NewTicker("raw-metrics", interval, func() {
-		metrics, err := source.GetRawMetrics()
+		metricsBatch, err := source.GetMetrics2()
 		if err != nil {
-			client.Errorf(err, "unable to retrieve metrics from sink")
+			client.Errorf(err, "unable to retrieve metricsBatch from sink")
 		}
 
-		for i := 0; i < len(metrics); i += limit {
-			metricsPipe <- metrics[i:min(i+limit, len(metrics))]
+		length := len(metricsBatch.Metrics)
+		for i := 0; i < length; i += limit {
+			metricsPipe <- &MetricsBatch{
+				Timestamp: metricsBatch.Timestamp,
+				Metrics:   metricsBatch.Metrics[i:min(i+limit, length)],
+			}
 		}
 	})
 	ticker.Start(false, true)
@@ -139,26 +172,31 @@ func sendMetrics(client *client.Client, pipe chan []*Metrics) {
 	}
 }
 
-func sendRawMetrics(client *client.Client, pipe chan RawMetrics) {
+func sendMetrics2(c *client.Client, pipe chan *MetricsBatch) {
 	queueLimit := 100
-	queue := make(chan *RawMetrics, queueLimit)
+	queue := make(chan *MetricsBatch, queueLimit)
 	defer close(queue)
 	go func() {
-		for rawMetrics := range queue {
-			if rawMetrics == nil {
+		for batch := range queue {
+			if batch == nil {
 				continue
 			}
-			client.SendRaw(map[string]interface{}{
-				"metrics": rawMetrics,
+			c.Pipe(client.Package{
+				Kind:        proto.PacketKindMetricsStoreRequest2,
+				ExpiryTime:  utils.After(2 * time.Hour),
+				ExpiryCount: 100,
+				Priority:    4,
+				Retries:     10,
+				Data:        batch,
 			})
 		}
 	}()
-	for raw := range pipe {
+	for batch := range pipe {
 		if len(queue) >= queueLimit-1 {
 			// Discard the oldest value
 			<-queue
 		}
-		queue <- &raw
+		queue <- batch
 	}
 }
 
@@ -214,28 +252,27 @@ func InitMetrics(
 		failOnError = true
 	}
 
+	if kubeletAddress != "" && strings.HasPrefix(kubeletAddress, "/") {
+		foundErrors = append(foundErrors, errors.New(
+			"kubelet address should not start with /",
+		))
+	}
+
+	var getNodeKubeletAddress func(node kuber.Node) string
+	if kubeletAddress != "" {
+		getNodeKubeletAddress = func(node kuber.Node) string {
+			return kubeletAddress
+		}
+	} else {
+		getNodeKubeletAddress = func(node kuber.Node) string {
+			return fmt.Sprintf("http://%s:%v", node.IP, kubeletPort)
+		}
+	}
+
 	for _, metricsSource := range metricsSourcesNames {
 		switch metricsSource {
 		case "kubelet":
 			client.Info("using kubelet as metrics source")
-
-			if kubeletAddress != "" && strings.HasPrefix(kubeletAddress, "/") {
-				foundErrors = append(foundErrors, errors.New(
-					"kubelet address should not start with /",
-				))
-				continue
-			}
-
-			var getNodeKubeletAddress func(node kuber.Node) string
-			if kubeletAddress != "" {
-				getNodeKubeletAddress = func(node kuber.Node) string {
-					return kubeletAddress
-				}
-			} else {
-				getNodeKubeletAddress = func(node kuber.Node) string {
-					return fmt.Sprintf("%s:%s", node.IP, kubeletPort)
-				}
-			}
 			kubelet, err := NewKubelet(getNodeKubeletAddress, client.Logger, metricsInterval,
 				kubeletTimeouts{
 					backoff: backOff{
@@ -254,6 +291,24 @@ func InitMetrics(
 			metricsSources = append(metricsSources, kubelet)
 		}
 	}
+
+	cAdvisor, err := NewCAdvisor(
+		getNodeKubeletAddress,
+		client.Logger,
+		scanner,
+		utils.Backoff{
+			Sleep:      utils.MustParseDuration(args, "--kubelet-backoff-sleep"),
+			MaxRetries: utils.MustParseInt(args, "--kubelet-backoff-max-retries"),
+		},
+	)
+
+	if err != nil {
+		foundErrors = append(foundErrors, karma.Format(
+			err,
+			"unable to initialize cAdvisor source",
+		))
+	}
+
 	if len(foundErrors) > 0 && (failOnError || len(metricsSources) == 0) {
 		return nil, karma.Format(foundErrors, "unable to init metric sources")
 	}
@@ -266,6 +321,12 @@ func InitMetrics(
 			metricsInterval,
 		)
 	}
+
+	go watchMetrics2(
+		client,
+		cAdvisor,
+		metricsInterval,
+	)
 
 	return metricsSources, nil
 }

@@ -9,6 +9,6 @@ type MetricsSource interface {
 	GetMetrics(scanner *scanner.Scanner) ([]*Metrics, error)
 }
 
-type RawSource interface {
-	GetRawMetrics() (RawMetrics, error)
+type Source interface {
+	GetMetrics2() (*MetricsBatch, error)
 }
