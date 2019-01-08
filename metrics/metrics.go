@@ -126,6 +126,7 @@ func watchMetricsProm(
 		metricsBatch, err := source.GetMetrics()
 		if err != nil {
 			c.Errorf(err, "unable to retrieve metricsBatch from sink")
+			return
 		}
 
 		packet := packetMetricsProm(metricsBatch)
@@ -329,12 +330,14 @@ func InitMetrics(
 				scanner,
 				metricsInterval,
 			)
+			break
 		case Source:
 			go watchMetricsProm(
 				client,
 				s,
 				metricsInterval,
 			)
+			break
 		}
 	}
 
