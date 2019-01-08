@@ -207,7 +207,7 @@ func main() {
 	}
 
 	if metricsEnabled {
-		_, err := metrics.InitMetrics(gwClient, entityScanner, args)
+		err := metrics.InitMetrics(gwClient, entityScanner, args)
 		if err != nil {
 			gwClient.Fatalf(err, "unable to initialize metrics sources")
 			os.Exit(1)

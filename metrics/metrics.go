@@ -117,28 +117,24 @@ func watchMetrics(
 	ticker.Start(false, true)
 }
 
-func watchMetrics2(
-	client *client.Client,
+func watchMetricsProm(
+	c *client.Client,
 	source Source,
 	interval time.Duration,
 ) {
-	metricsPipe := make(chan *MetricsBatch)
-	go sendMetrics2(client, metricsPipe)
-	defer close(metricsPipe)
-
 	ticker := utils.NewTicker("raw-metrics", interval, func() {
-		metricsBatch, err := source.GetMetrics2()
+		metricsBatch, err := source.GetMetrics()
 		if err != nil {
-			client.Errorf(err, "unable to retrieve metricsBatch from sink")
+			c.Errorf(err, "unable to retrieve metricsBatch from sink")
 		}
-
-		length := len(metricsBatch.Metrics)
-		for i := 0; i < length; i += limit {
-			metricsPipe <- &MetricsBatch{
-				Timestamp: metricsBatch.Timestamp,
-				Metrics:   metricsBatch.Metrics[i:min(i+limit, length)],
-			}
-		}
+		c.Pipe(client.Package{
+			Kind:        proto.PacketKindMetricsPromStoreRequest,
+			ExpiryTime:  utils.After(2 * time.Hour),
+			ExpiryCount: 100,
+			Priority:    4,
+			Retries:     10,
+			Data:        metricsBatch,
+		})
 	})
 	ticker.Start(false, true)
 }
@@ -169,34 +165,6 @@ func sendMetrics(client *client.Client, pipe chan []*Metrics) {
 			<-queue
 		}
 		queue <- metrics
-	}
-}
-
-func sendMetrics2(c *client.Client, pipe chan *MetricsBatch) {
-	queueLimit := 100
-	queue := make(chan *MetricsBatch, queueLimit)
-	defer close(queue)
-	go func() {
-		for batch := range queue {
-			if batch == nil {
-				continue
-			}
-			c.Pipe(client.Package{
-				Kind:        proto.PacketKindMetricsStoreRequest2,
-				ExpiryTime:  utils.After(2 * time.Hour),
-				ExpiryCount: 100,
-				Priority:    4,
-				Retries:     10,
-				Data:        batch,
-			})
-		}
-	}()
-	for batch := range pipe {
-		if len(queue) >= queueLimit-1 {
-			// Discard the oldest value
-			<-queue
-		}
-		queue <- batch
 	}
 }
 
@@ -234,7 +202,7 @@ func InitMetrics(
 	client *client.Client,
 	scanner *scanner.Scanner,
 	args map[string]interface{},
-) ([]MetricsSource, error) {
+) error {
 	var (
 		metricsInterval = utils.MustParseDuration(args, "--metrics-interval")
 		failOnError     = false // whether the agent will fail to start if an error happened during init metric source
@@ -242,11 +210,11 @@ func InitMetrics(
 		kubeletAddress, _ = args["--kubelet-address"].(string)
 		kubeletPort, _    = args["--kubelet-port"].(string)
 
-		metricsSources = make([]MetricsSource, 0)
+		metricsSources = make([]interface{}, 0)
 		foundErrors    = make([]error, 0)
 	)
 
-	metricsSourcesNames := []string{"influx", "kubelet"}
+	metricsSourcesNames := []string{"alpha-cadvisor", "kubelet"}
 	if names, ok := args["--source"].([]string); ok && len(names) > 0 {
 		metricsSourcesNames = names
 		failOnError = true
@@ -289,44 +257,51 @@ func InitMetrics(
 			}
 
 			metricsSources = append(metricsSources, kubelet)
+
+		case "alpha-cadvisor":
+			cAdvisor, err := NewCAdvisor(
+				getNodeKubeletAddress,
+				client.Logger,
+				scanner,
+				utils.Backoff{
+					Sleep:      utils.MustParseDuration(args, "--kubelet-backoff-sleep"),
+					MaxRetries: utils.MustParseInt(args, "--kubelet-backoff-max-retries"),
+				},
+			)
+
+			if err != nil {
+				foundErrors = append(foundErrors, karma.Format(
+					err,
+					"unable to initialize cAdvisor source",
+				))
+				continue
+			}
+
+			metricsSources = append(metricsSources, cAdvisor)
 		}
 	}
 
-	cAdvisor, err := NewCAdvisor(
-		getNodeKubeletAddress,
-		client.Logger,
-		scanner,
-		utils.Backoff{
-			Sleep:      utils.MustParseDuration(args, "--kubelet-backoff-sleep"),
-			MaxRetries: utils.MustParseInt(args, "--kubelet-backoff-max-retries"),
-		},
-	)
-
-	if err != nil {
-		foundErrors = append(foundErrors, karma.Format(
-			err,
-			"unable to initialize cAdvisor source",
-		))
-	}
-
 	if len(foundErrors) > 0 && (failOnError || len(metricsSources) == 0) {
-		return nil, karma.Format(foundErrors, "unable to init metric sources")
+		return karma.Format(foundErrors, "unable to init metric sources")
 	}
 
 	for _, source := range metricsSources {
-		go watchMetrics(
-			client,
-			source,
-			scanner,
-			metricsInterval,
-		)
+		switch s := source.(type) {
+		case MetricsSource:
+			go watchMetrics(
+				client,
+				s,
+				scanner,
+				metricsInterval,
+			)
+		case Source:
+			go watchMetricsProm(
+				client,
+				s,
+				metricsInterval,
+			)
+		}
 	}
 
-	go watchMetrics2(
-		client,
-		cAdvisor,
-		metricsInterval,
-	)
-
-	return metricsSources, nil
+	return nil
 }
