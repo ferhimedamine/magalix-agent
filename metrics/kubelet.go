@@ -364,7 +364,7 @@ func (kubelet *Kubelet) GetMetrics(
 			)
 			err = kubelet.withBackoff(func() error {
 				summaryResponse, err = http.Get(
-					"http://" + kubelet.getNodeKubeletAddress(node) + "/stats/summary",
+					kubelet.getNodeKubeletAddress(node) + "/stats/summary",
 				)
 				if err != nil {
 					return karma.Format(
@@ -576,7 +576,7 @@ func (kubelet *Kubelet) GetMetrics(
 
 			err = kubelet.withBackoff(func() error {
 				cadvisorResponse, err = http.Get(
-					"http://" + kubelet.getNodeKubeletAddress(node) + "/metrics/cadvisor",
+					kubelet.getNodeKubeletAddress(node) + "/metrics/cadvisor",
 				)
 				if err != nil {
 					return karma.Format(
