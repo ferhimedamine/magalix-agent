@@ -60,7 +60,7 @@ type MetricValue struct {
 type MetricsBatch struct {
 	Timestamp time.Time
 
-	Metrics []*MetricFamily
+	Metrics map[string]*MetricFamily
 }
 
 // map of metric_name:list of metric points
@@ -149,7 +149,8 @@ func packetMetricsProm(metricsBatch *MetricsBatch) *proto.PacketMetricsPromStore
 		Metrics:   make([]*proto.PacketMetricFamilyItem, len(metricsBatch.Metrics)),
 	}
 
-	for i, metricFamily := range metricsBatch.Metrics {
+	i := 0
+	for _, metricFamily := range metricsBatch.Metrics {
 		familyItem := &proto.PacketMetricFamilyItem{
 			Name:   metricFamily.Name,
 			Type:   metricFamily.Type,
@@ -170,6 +171,7 @@ func packetMetricsProm(metricsBatch *MetricsBatch) *proto.PacketMetricsPromStore
 		}
 
 		packet.Metrics[i] = familyItem
+		i++
 	}
 
 	return packet
