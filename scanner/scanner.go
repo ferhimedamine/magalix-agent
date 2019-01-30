@@ -90,7 +90,9 @@ func InitScanner(
 		// noop function
 		scanner.analysisDataSender = func(args ...interface{}) {}
 	}
-	scanner.Ticker = utils.NewTicker("scanner", intervalScanner, scanner.scan)
+	scanner.Ticker = utils.NewTicker("scanner", intervalScanner, func(_ time.Time) {
+		scanner.scan()
+	})
 	scanner.Start(true, false)
 	return scanner
 }
