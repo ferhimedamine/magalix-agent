@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"os"
 	"regexp"
@@ -205,69 +206,113 @@ func (kube *Kube) GetResources() (
 	resources []Resource,
 	rawResources map[string]interface{},
 ) {
-	controllers, err := kube.GetReplicationControllers()
-	if err != nil {
-		kube.logger.Errorf(
-			err,
-			"unable to get replication controllers",
-		)
+	wg := sync.WaitGroup{}
+	do := func(fn func()) {
+		wg.Add(1)
+		fn()
+		wg.Done()
 	}
 
-	podList, err := kube.GetPods()
-	if err != nil {
-		kube.logger.Errorf(
-			err,
-			"unable to get pods",
-		)
-	}
+	var (
+		controllers    *kv1.ReplicationControllerList
+		podList        *kv1.PodList
+		deployments    *kbeta2.DeploymentList
+		statefulSets   *kbeta2.StatefulSetList
+		daemonSets     *kbeta2.DaemonSetList
+		replicaSets    *kbeta2.ReplicaSetList
+		cronJobs       *kbeta1.CronJobList
+		limitRangeList *kv1.LimitRangeList
+	)
 
-	deployments, err := kube.GetDeployments()
-	if err != nil {
-		kube.logger.Errorf(
-			err,
-			"unable to get deployments",
-		)
-	}
+	do(func() {
+		var err error
+		controllers, err = kube.GetReplicationControllers()
+		if err != nil {
+			kube.logger.Errorf(
+				err,
+				"unable to get replication controllers",
+			)
+		}
+	})
 
-	statefulSets, err := kube.GetStatefulSets()
-	if err != nil {
-		kube.logger.Errorf(
-			err,
-			"unable to get statefulSets",
-		)
-	}
+	do(func() {
+		var err error
+		podList, err = kube.GetPods()
+		if err != nil {
+			kube.logger.Errorf(
+				err,
+				"unable to get pods",
+			)
+		}
+	})
 
-	daemonSets, err := kube.GetDaemonSets()
-	if err != nil {
-		kube.logger.Errorf(
-			err,
-			"unable to get daemonSets",
-		)
-	}
+	do(func() {
+		var err error
+		deployments, err = kube.GetDeployments()
+		if err != nil {
+			kube.logger.Errorf(
+				err,
+				"unable to get deployments",
+			)
+		}
+	})
 
-	replicaSets, err := kube.GetReplicaSets()
-	if err != nil {
-		kube.logger.Errorf(
-			err,
-			"unable to get replicasets",
-		)
-	}
+	do(func() {
+		var err error
+		statefulSets, err = kube.GetStatefulSets()
+		if err != nil {
+			kube.logger.Errorf(
+				err,
+				"unable to get statefulSets",
+			)
+		}
+	})
 
-	cronJobs, err := kube.GetCronJobs()
-	if err != nil {
-		kube.logger.Errorf(
-			err,
-			"unable to get cron jobs",
-		)
-	}
+	do(func() {
+		var err error
+		daemonSets, err = kube.GetDaemonSets()
+		if err != nil {
+			kube.logger.Errorf(
+				err,
+				"unable to get daemonSets",
+			)
+		}
+	})
 
-	limitRangeList, err := kube.GetLimitRanges()
-	if err != nil {
-		kube.logger.Errorf(
-			err,
-			"unable to get limitRanges",
-		)
-	}
+	do(func() {
+		var err error
+		replicaSets, err = kube.GetReplicaSets()
+		if err != nil {
+			kube.logger.Errorf(
+				err,
+				"unable to get replicasets",
+			)
+		}
+	})
+
+	do(func() {
+		var err error
+		cronJobs, err = kube.GetCronJobs()
+		if err != nil {
+			kube.logger.Errorf(
+				err,
+				"unable to get cron jobs",
+			)
+		}
+	})
+
+	do(func() {
+		var err error
+		limitRangeList, err = kube.GetLimitRanges()
+		if err != nil {
+			kube.logger.Errorf(
+				err,
+				"unable to get limitRanges",
+			)
+		}
+	})
+
+	wg.Wait()
 
 	rawResources = map[string]interface{}{
 		"pods":         podList,
